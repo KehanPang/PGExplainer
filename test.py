@@ -1,8 +1,7 @@
 import torch
 
-from HeteroDataset import *
-from HomoDataset import *
-from HeteroModel import *
+from dataset import *
+from model import *
 import argparse
 import copy
 from sklearn.metrics import f1_score

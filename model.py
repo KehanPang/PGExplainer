@@ -9,8 +9,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
 from dgl.nn.pytorch import RelGraphConv
 from dgl.nn.pytorch import HeteroGraphConv
-from HeteroDataset import *
-from HomoDataset import *
+from dataset import *
 
 
 # class PinSAGE(nn.Module):
