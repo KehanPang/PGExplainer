@@ -1,90 +1,99 @@
-from dataset import *
-from model import *
-import argparse
-import copy
-from sklearn.metrics import f1_score
-from sklearn.metrics import roc_auc_score
-import tqdm
-import time
 import torch
-import collections
-import numpy as np
 import torch.nn as nn
-import networkx as nx
-from math import sqrt
-from torch import Tensor
-from textwrap import wrap
-from torch.optim import Adam
-import matplotlib.pyplot as plt
-import torch.nn.functional as F
-from torch_geometric.data import Data
-from torch_geometric.nn.conv import MessagePassing
-from torch_geometric.utils import to_networkx
-from torch_geometric.utils.num_nodes import maybe_num_nodes
-from typing import Tuple, List, Dict, Optional
-from torch_geometric.datasets import MoleculeNet
-from rdkit import Chem
+import random
 
 
 class PGExplainer(nn.Module):
-    def __init__(self, model, in_features, hidden_features, device, graph):
+    def __init__(self, model, in_features, hidden_features, device, graph, feat):
         super().__init__()
-        self.explainers = {}
-        for etype in graph.canonical_etypes:
-            layer = nn.Sequential(
-                nn.Linear(in_features=2 * in_features, out_features=hidden_features),  # 第一个线性层
-                nn.ReLU(),  # 非线性激活函数
-                nn.Linear(in_features=hidden_features, out_features=1)  # 第二个线性层
-            )
-            self.explainers[etype](layer)
-        self.node_dict = {node_type: graph.nodes[node_type].data['feat'].to(device).to(torch.float32) for node_type in
-                          graph.ntypes}
-        self.embed = model(graph, self.node_dict)
         self.graph = graph
-        self.hops = 2
-        self.top_k = 3
+        self.model = model
+        self.model.eval()
 
-    def get_k_hop_subgraph(self, node, k, etype):
-        res = set()
-        if k != 0:
-            in_nodes = self.graph.in_nodes(node, etype=etype)
-            for in_node in list(in_nodes):
-                tmp = self.get_k_hop_subgraph(in_node, k - 1, etype)
-                res = res | set(tmp)
-        return res
+        # for etype in self.graph.canonical_etypes:
+        #     layer = nn.Sequential(
+        #         nn.Linear(in_features=2 * in_features, out_features=hidden_features),  # 第一个线性层
+        #         nn.ReLU(),  # 非线性激活函数
+        #         nn.Linear(in_features=hidden_features, out_features=1),  # 第二个线性层
+        #     )
+        #     self.explainers[etype] = layer.to(device)
+        self.explainers = nn.Sequential(
+            nn.Linear(in_features=in_features, out_features=hidden_features),  # 第一个线性层
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(in_features=hidden_features, out_features=hidden_features),  # 第二个线性层
+            nn.LeakyReLU(),
+            nn.Dropout(p=0.2),
+            nn.Linear(in_features=hidden_features, out_features=1, bias=True),  # 第三个线性层
+        ).to(device)
+        self.k_neighbours = 500
+        self.hops = 3
+        self.feat = feat
+        self.device = device
+        self.sub_graph_num = 10
+
+    def get_masked_emb(self, mask):
+        node_dict = {}
+        # mask_vec = mask_vec.unsqueeze(-1)
+        for node_type in self.graph.ntypes:
+            feat = self.graph.nodes[node_type].data['feat'].to(self.device).to(torch.float32)
+            # mask_feat = mask_vec[:len(feat)] * feat
+            node_dict[node_type] = mask[:len(feat)] * feat
+        return node_dict
+
+    def get_top_k_nodes_mask(self, node):
+        in_subgraph = {}
+
+        def get_hops_neighbor(vertex, hops):
+            if hops <= 0:
+                return
+            else:
+                in_nodes = []
+                for etype in self.graph.canonical_etypes:
+                    try:
+                        etype_nodes = list(self.graph.predecessors(vertex, etype=etype))
+                        in_nodes += etype_nodes
+                    except:
+                        continue
+                    if len(in_nodes) != 0:
+                        break
+
+                sample = random.sample(in_nodes, min(len(in_nodes), self.k_neighbours))
+                for i in sample:
+                    in_subgraph[i] = 1
+
+                for vertex in sample:
+                    get_hops_neighbor(vertex, hops - 1)
+                return in_nodes
+
+        get_hops_neighbor(node, self.hops)
+
+        return torch.tensor(list(in_subgraph.keys())).to(self.device)
 
     def forward(self, head, tail):
-        head_rel_dict = collections.defaultdict(list)
-        tail_rel_dict = collections.defaultdict(list)
-        head_top_k = collections.defaultdict(list)
-        tail_top_k = collections.defaultdict(list)
-        for etype in self.graph.canonical_etypes:
-            in_subgraph_head = self.get_k_hop_subgraph(head, self.hops, etype)
-            in_subgraph_tail = self.get_k_hop_subgraph(tail, self.hops, etype)
+        head_edge_emb = self.feat[head] * self.feat
+        tail_edge_emb = self.feat[tail] * self.feat
 
-            # get in subgraph of head node
-            for node in in_subgraph_head:
-                edge_emb = torch.cat((self.embed[head], self.embed[node])).to(self.device)
-                edge_emb_weight = self.explainers[etype](edge_emb).to('cpu')
-                head_rel_dict[etype].append((node, edge_emb_weight))
-            head_sorted_tuples = sorted(head_rel_dict[etype], key=lambda x: x[1], reverse=True)
-            head_top_k[etype[0]] = [item[0] for item in head_sorted_tuples[:self.top_k]]
+        head_mask = self.explainers(head_edge_emb)
+        tail_mask = self.explainers(tail_edge_emb)
 
-            # do the same for tail node
-            for node in in_subgraph_tail:
-                edge_emb = torch.cat((self.embed[tail], self.embed[node])).to(self.device)
-                edge_emb_weight = self.explainers[etype](edge_emb).to('cpu')
-                tail_rel_dict[etype].append((node, edge_emb_weight))
-            tail_sorted_tuples = sorted(head_rel_dict[etype], key=lambda x: x[1], reverse=True)
-            tail_top_k[etype[0]] = [item[0] for item in tail_sorted_tuples[:self.top_k]]
+        # head_top_k = self.get_top_k_nodes_mask(head)
+        # tail_top_k = self.get_top_k_nodes_mask(tail)
+        # mask_on_vec = torch.zeros(len(self.feat), dtype=torch.float32).to(self.device)
+        #
+        # mask_on_vec.scatter_(0, head_top_k, 1)
+        # mask_on_vec.scatter_(0, tail_top_k, 1)
+        #
+        # mask_off_vec = torch.ones(len(self.feat), dtype=torch.float32).to(self.device) - mask_on_vec
 
-        mask_node_dict = copy.deepcopy(self.node_dict)
-        for key in head_top_k:
-            mask = torch.tensor([i in head_top_k[key] for i in range(mask_node_dict[key].size(0))])
-            mask_node_dict[key][mask] = 0
+        mask_on = torch.sigmoid(head_mask + tail_mask)
+        mask_off = torch.ones((len(self.feat), 1), dtype=torch.float32).to(self.device) - mask_on
 
-        new_embed = self.model(self.graph, mask_node_dict)
-        head_emb = new_embed[head]
-        tail_emb = new_embed[tail]
+        mask_on_node_dict = self.get_masked_emb(mask_on)
+        mask_off_node_dict = self.get_masked_emb(mask_off)
 
-        return head_emb, tail_emb
+        mask_on_embed = self.model(self.graph, mask_on_node_dict)
+        mask_off_embed = self.model(self.graph, mask_off_node_dict)
+
+        return mask_on_embed['user'][head], mask_on_embed['item'][tail], mask_off_embed['user'][head], \
+            mask_off_embed['item'][tail]
