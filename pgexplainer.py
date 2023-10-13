@@ -30,7 +30,7 @@ class PGExplainer(nn.Module):
         self.hops = 3
         self.feat = feat
         self.device = device
-        self.sub_graph_num = 10
+        self.sub_graph_num = 150
 
     def get_masked_emb(self, mask):
         node_dict = {}
@@ -86,7 +86,8 @@ class PGExplainer(nn.Module):
         #
         # mask_off_vec = torch.ones(len(self.feat), dtype=torch.float32).to(self.device) - mask_on_vec
 
-        mask_on = torch.sigmoid(head_mask + tail_mask)
+        mask_on = self.sub_graph_num * torch.softmax(head_mask + tail_mask, 0)
+
         mask_off = torch.ones((len(self.feat), 1), dtype=torch.float32).to(self.device) - mask_on
 
         mask_on_node_dict = self.get_masked_emb(mask_on)

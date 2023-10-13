@@ -59,7 +59,7 @@ for i in range(args.epoch):
 
         weight = 0.95
 
-        loss = weight * c2(raw_pred, mask_on_pred) + (weight - 1) * c1(
+        loss = weight * c1(raw_pred, mask_on_pred) + (weight - 1) * c1(
             mask_off_pred, mask_on_pred)
 
         loss.backward()  # 反向传播
