@@ -30,7 +30,7 @@ class PGExplainer(nn.Module):
         self.hops = 3
         self.feat = feat
         self.device = device
-        self.sub_graph_num = 150
+        self.sub_graph_num = 200
 
     def get_masked_emb(self, mask):
         node_dict = {}
