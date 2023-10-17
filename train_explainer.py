@@ -1,7 +1,6 @@
 import torch
-from HeteroDataset import *
-from HomoDataset import *
-from HeteroModel import *
+from dataset import *
+from model import *
 import argparse
 import copy
 from sklearn.metrics import f1_score
@@ -37,9 +36,8 @@ optimizer = torch.optim.Adam(explainer.parameters(), lr=0.00005,
 exp_batch = 5120
 print("===================Training EXP Model===========================")
 explainer.train()
-exp_test_graph = pd.read_csv("dataset/movielens/test_pos.csv")
 for i in range(args.epoch):
-    samples = exp_test_graph.sample(exp_batch).values
+    samples = dataset.get_train_batch(exp_batch).values
     for item in samples:
         optimizer.zero_grad()
         head, tail, label = item
